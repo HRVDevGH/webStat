@@ -25,6 +25,8 @@ const localDirectory = path.join(__dirname, 'downloads');
 const extractedDirectory = path.join(localDirectory, 'unzipped');
 // Metadatei für bereits verarbeitete Downloads
 const downloadMetaFile = path.join(localDirectory, 'download-meta.json');
+// Datei für tägliche Besuchsstatistiken
+const dailyStatsFile = path.join(extractedDirectory, 'daily-stats.json');
 
 function loadDownloadMeta() {
   try {
@@ -54,6 +56,34 @@ function saveDownloadMeta(meta) {
     fs.writeFileSync(downloadMetaFile, JSON.stringify(meta, null, 2), 'utf8');
   } catch (e) {
     console.error('Konnte Download-Metadatei nicht schreiben:', e);
+  }
+}
+
+function loadDailyStats() {
+  try {
+    if (!fs.existsSync(dailyStatsFile)) {
+      return {};
+    }
+    const raw = fs.readFileSync(dailyStatsFile, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+    return parsed;
+  } catch (e) {
+    console.error('Konnte tägliche Statistikdatei nicht lesen, starte neu:', e);
+    return {};
+  }
+}
+
+function saveDailyStats(stats) {
+  try {
+    if (!fs.existsSync(extractedDirectory)) {
+      fs.mkdirSync(extractedDirectory, { recursive: true });
+    }
+    fs.writeFileSync(dailyStatsFile, JSON.stringify(stats, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Konnte tägliche Statistikdatei nicht schreiben:', e);
   }
 }
 
@@ -214,6 +244,24 @@ app.post('/download', async (req, res) => {
     // Metadatei aktualisieren
     saveDownloadMeta(meta);
 
+    // Tägliche Besuchsstatistik für alle betroffenen Tagesdateien aktualisieren
+    const dailyStats = loadDailyStats();
+    const updatedDates = [];
+    for (const fileName of processedExtractedFiles) {
+      try {
+        const stats = await computeDailyStatsForFile(fileName);
+        if (stats && stats.date) {
+          dailyStats[stats.date] = stats;
+          updatedDates.push(stats.date);
+        }
+      } catch (statsErr) {
+        console.error('Fehler beim Berechnen der Tagesstatistik für', fileName, statsErr);
+      }
+    }
+    if (updatedDates.length > 0) {
+      saveDailyStats(dailyStats);
+    }
+
     // Für die Fortschrittsanzeige gelten auch übersprungene Dateien als "bereits bearbeitet"
     const processedFilesTotal = downloadedFiles.length + skippedFiles.length;
     const processedBytesTotal = processedBytes + skippedBytes;
@@ -230,6 +278,7 @@ app.post('/download', async (req, res) => {
       processedBytes: processedBytesTotal,
       skippedBytes,
       extracted: Array.from(processedExtractedFiles),
+      dailyStatsUpdated: updatedDates,
     });
   } catch (error) {
     console.error('SFTP-Fehler:', error);
@@ -331,6 +380,173 @@ async function extractAndNormalizeLog(localGzPath) {
 
   // Rückgabe: alle erzeugten/erweiterten Dateien (oder null)
   return writtenDates.size ? Array.from(writtenDates) : null;
+}
+
+// Hilfsfunktion: Werte eine Tages-Logdatei (access-YYYY-MM-DD.log) aus
+// und berechne Aufrufe/Besuche nach Typ.
+async function computeDailyStatsForFile(fileName) {
+  const sourcePath = path.join(extractedDirectory, fileName);
+
+  if (!sourcePath.startsWith(extractedDirectory)) {
+    return null;
+  }
+
+  if (!fs.existsSync(sourcePath)) {
+    return null;
+  }
+
+  const readline = require('readline');
+  const stream = fs.createReadStream(sourcePath, { encoding: 'utf8' });
+
+  const rl = readline.createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
+
+  // Beispielzeile:
+  // 82.38.56.0 - - [30/Mar/2026:00:02:29 +0200] "GET /aboutus HTTP/1.1" 301 273 hrv.de "https://hrv.de/aboutus" "UA" "-"
+  const logRegex = /^(\S+)\s+\S+\s+\S+\s+\[([^\]]+)\]\s+"(\S+)\s+([^\"]+)\s+\S+"\s+(\d{3})\s+\S+\s+(\S+)\s+"([^\"]*)"\s+"([^\"]*)"/;
+
+  const monthMap = {
+    Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06',
+    Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12',
+  };
+
+  function toIsoFromApacheTime(str) {
+    const m = /^(\d{2})\/(\w{3})\/(\d{4}):(\d{2}):(\d{2}):(\d{2}) ([+\-]\d{4})$/.exec(str);
+    if (!m) return str;
+    const [, dd, monStr, yyyy, hh, mm, ss, offset] = m;
+    const mon = monthMap[monStr] || '01';
+    const offH = offset.slice(0, 3);
+    const offM = offset.slice(3);
+    return `${yyyy}-${mon}-${dd}T${hh}:${mm}:${ss}${offH}:${offM}`;
+  }
+
+  function classifyUserAgent(uaRaw) {
+    const ua = (uaRaw || '').toLowerCase();
+    if (!ua) return 'human';
+
+    if (ua.includes('chatgpt') || ua.includes('gpt') || ua.includes('openai') || ua.includes('copilot') || ua.includes('oai-searchbot') || ua.includes('ai-')) {
+      return 'ai';
+    }
+
+    if (/bot|crawl|spider|searchbot|crawler/.test(ua)) {
+      return 'bot';
+    }
+
+    return 'human';
+  }
+
+  let totalLines = 0;
+  const visitors = new Map();
+  const MAX_VISITORS = 2000;
+  let firstDateIsoFull = null;
+
+  await new Promise((resolve, reject) => {
+    rl.on('line', (line) => {
+      totalLines += 1;
+
+      const match = logRegex.exec(line);
+      if (!match) return;
+
+      const ip = match[1];
+      const timeRaw = match[2];
+      const method = match[3];
+      const pathRequested = match[4];
+      const status = match[5];
+      const host = match[6];
+      const userAgent = match[8];
+
+      // Nur 200er berücksichtigen, 404/3xx ignorieren
+      if (status !== '200') return;
+
+      const url = host && host !== '-' ? `https://${host}${pathRequested}` : pathRequested;
+      const timeIso = toIsoFromApacheTime(timeRaw);
+
+      if (!firstDateIsoFull || timeIso < firstDateIsoFull) {
+        firstDateIsoFull = timeIso;
+      }
+
+      const key = `${ip}|${userAgent || ''}`;
+      let visitor = visitors.get(key);
+
+      const currentType = classifyUserAgent(userAgent);
+
+      if (!visitor) {
+        if (visitors.size >= MAX_VISITORS) {
+          return;
+        }
+        visitor = {
+          ip,
+          userAgent,
+          firstTime: timeIso,
+          lastTime: timeIso,
+          lastUrl: url,
+          hits: 1,
+          type: currentType,
+        };
+      } else {
+        visitor.lastTime = timeIso;
+        visitor.lastUrl = url;
+        visitor.hits += 1;
+        if (visitor.type !== 'ai') {
+          if (currentType === 'ai') {
+            visitor.type = 'ai';
+          } else if (visitor.type === 'human' && currentType === 'bot') {
+            visitor.type = 'bot';
+          }
+        }
+      }
+
+      visitors.set(key, visitor);
+    });
+
+    rl.on('close', () => resolve());
+    rl.on('error', (err) => reject(err));
+    stream.on('error', (err) => reject(err));
+  });
+
+  const entries = Array.from(visitors.values());
+  const firstDateIso = firstDateIsoFull ? firstDateIsoFull.slice(0, 10) : null;
+
+  let visitsTotal = 0;
+  let visitsBots = 0;
+  let visitsAi = 0;
+  let visitsHuman = 0;
+
+  function calcSessionsForVisitor(v) {
+    if (!v.firstTime || !v.lastTime) return 1;
+    const start = Date.parse(v.firstTime);
+    const end = Date.parse(v.lastTime);
+    if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 1;
+    const diffMinutes = (end - start) / 60000;
+    return diffMinutes > 5 ? 2 : 1;
+  }
+
+  for (const v of entries) {
+    const sessions = calcSessionsForVisitor(v);
+    visitsTotal += sessions;
+
+    if (v.type === 'ai') {
+      visitsAi += sessions;
+    } else if (v.type === 'bot') {
+      visitsBots += sessions;
+    } else {
+      visitsHuman += sessions;
+    }
+  }
+
+  const m = /^access-(\d{4}-\d{2}-\d{2})\.log$/.exec(fileName);
+  const dateKey = m ? m[1] : firstDateIso || fileName;
+
+  return {
+    date: dateKey,
+    lineCountApprox: totalLines,
+    visitsTotal,
+    visitsBots,
+    visitsAi,
+    visitsHuman,
+  };
 }
 
 // Liste alle Dateien im lokalen downloads-Verzeichnis auf
@@ -669,6 +885,108 @@ app.post('/extract', (req, res) => {
       });
     });
   });
+
+// Rechne alle vorhandenen Tages-Logdateien neu in die daily-stats.json
+app.post('/recompute-daily-stats', async (req, res) => {
+  try {
+    if (!fs.existsSync(extractedDirectory)) {
+      return res.json({
+        success: true,
+        message: 'Kein Unterverzeichnis für entpackte Dateien vorhanden.',
+        updatedDates: [],
+        totalFiles: 0,
+      });
+    }
+
+    const files = fs
+      .readdirSync(extractedDirectory)
+      .filter((name) => {
+        const fullPath = path.join(extractedDirectory, name);
+        return (
+          fs.statSync(fullPath).isFile() &&
+          name.toLowerCase().endsWith('.log') &&
+          name.startsWith('access-')
+        );
+      });
+
+    if (!files.length) {
+      return res.json({
+        success: true,
+        message: 'Keine Tages-Logdateien zum Auswerten gefunden.',
+        updatedDates: [],
+        totalFiles: 0,
+      });
+    }
+
+    const dailyStats = loadDailyStats();
+    const updatedDates = [];
+
+    for (const fileName of files) {
+      try {
+        const stats = await computeDailyStatsForFile(fileName);
+        if (stats && stats.date) {
+          dailyStats[stats.date] = stats;
+          updatedDates.push(stats.date);
+        }
+      } catch (err) {
+        console.error('Fehler beim Berechnen der Tagesstatistik für', fileName, err);
+      }
+    }
+
+    if (updatedDates.length > 0) {
+      saveDailyStats(dailyStats);
+    }
+
+    res.json({
+      success: true,
+      message: 'Tägliche Statistiken wurden neu berechnet.',
+      updatedDates,
+      totalFiles: files.length,
+    });
+  } catch (error) {
+    console.error('Fehler beim Neuberechnen der täglichen Statistiken:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Fehler beim Neuberechnen der täglichen Statistiken',
+      error: error.message,
+    });
+  }
+});
+
+// Liefert die letzten 30 Tage aus daily-stats.json (sortiert nach Datum)
+app.get('/daily-stats-last30', (req, res) => {
+  try {
+    const stats = loadDailyStats();
+    const allDates = Object.keys(stats || {})
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
+
+    const last30 = allDates.slice(-30);
+    const days = last30.map((date) => {
+      const s = stats[date] || {};
+      return {
+        date,
+        lineCountApprox: s.lineCountApprox || 0,
+        visitsTotal: s.visitsTotal || 0,
+        visitsHuman: s.visitsHuman || 0,
+        visitsBots: s.visitsBots || 0,
+        visitsAi: s.visitsAi || 0,
+      };
+    });
+
+    res.json({
+      success: true,
+      days,
+    });
+  } catch (error) {
+    console.error('Fehler beim Lesen der letzten 30 Tagesstatistiken:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Fehler beim Lesen der letzten 30 Tagesstatistiken',
+      error: error.message,
+    });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Server läuft auf http://localhost:${PORT}`);

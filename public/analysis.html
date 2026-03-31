@@ -13,6 +13,7 @@
   <button id="nextBtn" disabled>Nächster Tag &gt;</button>
   <div id="meta"></div>
   <div id="result"></div>
+  <div id="preview"></div>
 
   <script>
     const backBtn = document.getElementById('backBtn');
@@ -20,6 +21,7 @@
     const nextBtn = document.getElementById('nextBtn');
     const metaDiv = document.getElementById('meta');
     const resultDiv = document.getElementById('result');
+    const previewDiv = document.getElementById('preview');
 
     backBtn.addEventListener('click', () => {
       window.location.href = '/';
@@ -39,6 +41,9 @@
 
       metaDiv.textContent = `Analysiere Datei: ${fileName}`;
       resultDiv.textContent = 'Analyse läuft...';
+      if (previewDiv) {
+        previewDiv.textContent = '';
+      }
 
       // Vor/Nach-Buttons vorbereiten
       prevBtn.disabled = true;
@@ -185,20 +190,22 @@
           resultDiv.appendChild(p);
         }
 
-        if (data.preview) {
+        if (previewDiv && data.preview) {
+          previewDiv.innerHTML = '';
+
           const previewHeading = document.createElement('h2');
           previewHeading.textContent = 'Vorschau der Datei';
-          resultDiv.appendChild(previewHeading);
+          previewDiv.appendChild(previewHeading);
 
           if (data.previewTruncated) {
             const info = document.createElement('p');
             info.textContent = 'Hinweis: Vorschau wurde gekürzt.';
-            resultDiv.appendChild(info);
+            previewDiv.appendChild(info);
           }
 
           const pre = document.createElement('pre');
           pre.textContent = data.preview;
-          resultDiv.appendChild(pre);
+          previewDiv.appendChild(pre);
         }
       } catch (err) {
         resultDiv.textContent = 'Fehler: ' + err.message;

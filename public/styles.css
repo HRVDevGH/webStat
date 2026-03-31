@@ -3,7 +3,8 @@
 /* Startseite: dunkles Layout */
 body.page-index {
   font-family: system-ui, sans-serif;
-  max-width: 800px;
+  width: 90%;
+  max-width: 100%;
   margin: 2rem auto;
   padding: 0 1rem;
   background: #121212;
@@ -111,7 +112,8 @@ body.page-index #lastModifiedInfo {
 /* Analyse-Seite: dunkles Layout */
 body.page-analysis {
   font-family: system-ui, sans-serif;
-  max-width: 900px;
+  width: 90%;
+  max-width: 100%;
   margin: 2rem auto;
   padding: 0 1rem;
   background: #121212;
@@ -153,8 +155,17 @@ body.page-analysis #result {
   max-height: 60vh;
   overflow-y: auto;
 }
+body.page-analysis #preview {
+  margin-top: 1rem;
+  background: #1e1e1e;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #333;
+  max-height: 40vh;
+  overflow-y: auto;
+}
 body.page-analysis #result table {
-  width: 98%;
+  width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
   color: #e5e5e5;

@@ -5,6 +5,7 @@
   <title>SFTP .gz Downloader</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="page-index">
   <h1>SFTP .gz Downloader</h1>
@@ -42,6 +43,20 @@
     <button id="analyzeBtn" disabled>Ausgewählte entpackte Datei analysieren</button>
     <div id="analyzeStatus" style="margin-top:0.5rem; white-space:pre-wrap;"></div>
   </div>
+  
+  <div class="panel">
+    <h2>Tägliche Statistiken</h2>
+    <p>
+      Hier kannst du alle vorhandenen Tages-Logdateien erneut analysieren lassen.
+      Die aggregierten Werte (Aufrufe gesamt, Besucher, Bots, KI) werden in
+      <code>downloads/unzipped/daily-stats.json</code> gespeichert oder aktualisiert.
+    </p>
+    <button id="recomputeDailyStatsBtn">Tagesstatistiken neu berechnen</button>
+    <div id="dailyStatsStatus" style="margin-top:0.5rem; white-space:pre-wrap;"></div>
+    <div style="margin-top:1rem; height:260px;">
+      <canvas id="dailyStatsChart"></canvas>
+    </div>
+  </div>
 
   <script>
     // Seitentitel und sichtbare Info um Datum/Uhrzeit der letzten Änderung erweitern
@@ -75,6 +90,10 @@
     const analyzeStatusDiv = document.getElementById('analyzeStatus');
     const refreshUnzippedBtn = document.getElementById('refreshUnzippedBtn');
     const unzippedListDiv = document.getElementById('unzippedList');
+    const recomputeDailyStatsBtn = document.getElementById('recomputeDailyStatsBtn');
+    const dailyStatsStatusDiv = document.getElementById('dailyStatsStatus');
+    const dailyStatsChartCanvas = document.getElementById('dailyStatsChart');
+    let dailyStatsChartInstance = null;
 
     let selectedGzFile = null;
     let selectedUnzippedFile = null;
@@ -340,11 +359,135 @@
 
     refreshUnzippedBtn.addEventListener('click', loadUnzippedFiles);
 
+    recomputeDailyStatsBtn.addEventListener('click', async () => {
+      recomputeDailyStatsBtn.disabled = true;
+      dailyStatsStatusDiv.textContent = 'Berechne Tagesstatistiken...';
+
+      try {
+        const response = await fetch('/recompute-daily-stats', { method: 'POST' });
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || data.message || 'Fehler beim Neuberechnen der Tagesstatistiken');
+        }
+
+        const updated = data.updatedDates || [];
+        dailyStatsStatusDiv.textContent =
+          `Erfolg: ${data.message}\n` +
+          `Betroffene Tage: ${updated.length ? updated.join(', ') : 'keine'}\n` +
+          `Ausgewertete Logdateien: ${data.totalFiles ?? 0}`;
+
+        // Nach erfolgreicher Neuberechnung den Graphen aktualisieren
+        loadDailyStatsChart();
+      } catch (err) {
+        dailyStatsStatusDiv.textContent = 'Fehler: ' + err.message;
+      } finally {
+        recomputeDailyStatsBtn.disabled = false;
+      }
+    });
+
+    async function loadDailyStatsChart() {
+      if (!dailyStatsChartCanvas) return;
+      try {
+        const response = await fetch('/daily-stats-last30');
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || data.message || 'Fehler beim Laden der Tagesstatistiken');
+        }
+
+        const days = data.days || [];
+        if (!days.length) {
+          if (dailyStatsChartInstance) {
+            dailyStatsChartInstance.destroy();
+            dailyStatsChartInstance = null;
+          }
+          return;
+        }
+
+        const labels = days.map((d) => d.date);
+        const visitsTotal = days.map((d) => d.visitsTotal || 0);
+        const visitsHuman = days.map((d) => d.visitsHuman || 0);
+        const visitsBots = days.map((d) => d.visitsBots || 0);
+        const visitsAi = days.map((d) => d.visitsAi || 0);
+
+        const ctx = dailyStatsChartCanvas.getContext('2d');
+
+        const chartData = {
+          labels,
+          datasets: [
+            {
+              label: 'Besuche gesamt',
+              data: visitsTotal,
+              borderColor: '#58a6ff',
+              backgroundColor: 'rgba(88, 166, 255, 0.2)',
+              tension: 0.2,
+            },
+            {
+              label: 'Menschen',
+              data: visitsHuman,
+              borderColor: '#3fb950',
+              backgroundColor: 'rgba(63, 185, 80, 0.2)',
+              tension: 0.2,
+            },
+            {
+              label: 'Bots',
+              data: visitsBots,
+              borderColor: '#f78166',
+              backgroundColor: 'rgba(247, 129, 102, 0.2)',
+              tension: 0.2,
+            },
+            {
+              label: 'KI',
+              data: visitsAi,
+              borderColor: '#c297ff',
+              backgroundColor: 'rgba(194, 151, 255, 0.2)',
+              tension: 0.2,
+            },
+          ],
+        };
+
+        const chartOptions = {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: {
+              ticks: { color: '#e5e5e5' },
+              grid: { color: '#333333' },
+            },
+            y: {
+              ticks: { color: '#e5e5e5' },
+              grid: { color: '#333333' },
+            },
+          },
+          plugins: {
+            legend: {
+              labels: { color: '#e5e5e5' },
+            },
+          },
+        };
+
+        if (dailyStatsChartInstance) {
+          dailyStatsChartInstance.data = chartData;
+          dailyStatsChartInstance.options = chartOptions;
+          dailyStatsChartInstance.update();
+        } else {
+          dailyStatsChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: chartData,
+            options: chartOptions,
+          });
+        }
+      } catch (err) {
+        console.error('Fehler beim Laden der Tagesstatistik für Diagramm:', err);
+      }
+    }
+
     // Beim Laden der Seite zuerst das Download-Verzeichnis prüfen,
     // dann vorhandene Downloads/entpackte Dateien anzeigen
     checkDownloadDir();
     loadFiles();
     loadUnzippedFiles();
+    loadDailyStatsChart();
   </script>
 </body>
 </html>
