@@ -1,0 +1,192 @@
+/* Gemeinsame Styles für Startseite (dunkel) und Analyse (dunkel) */
+
+/* Startseite: dunkles Layout */
+body.page-index {
+  font-family: system-ui, sans-serif;
+  max-width: 800px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  background: #121212;
+  color: #e5e5e5;
+}
+body.page-index h1 {
+  text-align: center;
+  color: #ffffff;
+}
+body.page-index button {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  border-radius: 4px;
+  border: 1px solid #2453b3;
+  background: linear-gradient(135deg, #0b2a5b, #1f6feb);
+  color: #ffffff;
+  cursor: pointer;
+}
+body.page-index button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+body.page-index #status {
+  margin-top: 1rem;
+  white-space: pre-wrap;
+  background: #1e1e1e;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #333;
+  min-height: 3rem;
+}
+body.page-index #dayProgress {
+  margin-top: 0.75rem;
+}
+body.page-index .day-progress-row {
+  margin-top: 0.25rem;
+}
+body.page-index .day-progress-label {
+  font-size: 0.85rem;
+  margin-bottom: 0.1rem;
+}
+body.page-index .day-progress-bar {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  background: #2a2a2a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+body.page-index .day-progress-bar-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: #1f6feb;
+  transition: width 0.4s ease-out;
+}
+body.page-index .day-progress-bar-inner.loading {
+  width: 40%;
+  animation: loading-bar 1.2s ease-in-out infinite;
+}
+@keyframes loading-bar {
+  0% { left: -40%; }
+  50% { left: 30%; }
+  100% { left: 100%; }
+}
+body.page-index .panel {
+  margin-top: 2rem;
+  background: #1e1e1e;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #333;
+}
+body.page-index #fileList,
+body.page-index #unzippedList {
+  margin-top: 0.5rem;
+  max-height: 250px;
+  overflow-y: auto;
+  border: 1px solid #333;
+  border-radius: 4px;
+}
+body.page-index #fileList button,
+body.page-index #unzippedList button {
+  margin: 2px;
+  font-size: 0.85rem;
+  border-radius: 4px;
+  border: 1px solid #555555;
+  background: linear-gradient(135deg, #2a2a2a, #5a5a5a);
+  color: #ffffff;
+  cursor: pointer;
+}
+body.page-index #fileList button.selected,
+body.page-index #unzippedList button.selected {
+  background: linear-gradient(135deg, #5a5a5a, #9a9a9a);
+  color: #ffffff;
+}
+body.page-index #lastModifiedInfo {
+  text-align: center;
+  font-size: 0.9rem;
+  color: #aaaaaa;
+}
+
+/* Analyse-Seite: dunkles Layout */
+body.page-analysis {
+  font-family: system-ui, sans-serif;
+  max-width: 900px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  background: #121212;
+  color: #e5e5e5;
+}
+body.page-analysis h1 {
+  text-align: center;
+  color: #ffffff;
+}
+body.page-analysis button {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  border-radius: 4px;
+  border: 1px solid #2453b3;
+  background: linear-gradient(135deg, #0b2a5b, #1f6feb);
+  color: #ffffff;
+  cursor: pointer;
+  margin-top: 0.5rem;
+}
+body.page-analysis button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+body.page-analysis #meta {
+  margin-top: 1rem;
+  background: #1e1e1e;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #333;
+  white-space: pre-wrap;
+}
+body.page-analysis #result {
+  margin-top: 1rem;
+  background: #1e1e1e;
+  padding: 1rem;
+  border-radius: 4px;
+  border: 1px solid #333;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+body.page-analysis #result table {
+  width: 98%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  color: #e5e5e5;
+}
+body.page-analysis #result th,
+body.page-analysis #result td {
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+body.page-analysis #result thead th {
+  border-bottom: 1px solid #444;
+  background: #181818;
+}
+body.page-analysis #result tbody tr:nth-child(even) {
+  background: #181818;
+}
+body.page-analysis #result tbody tr:nth-child(odd) {
+  background: #141414;
+}
+body.page-analysis #result td.urlCell {
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.page-analysis #result td.uaCell {
+  max-width: 260px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.page-analysis #result tbody tr.lowEmphasis {
+  color: #999;
+}
