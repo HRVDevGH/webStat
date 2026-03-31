@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -8,12 +9,14 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// *** HIER DEINE SFTP-ZUGANGSDATEN EINTRAGEN ***
+// SFTP-Zugangsdaten werden über Umgebungsvariablen gesetzt, damit sie nicht im Code/Repository liegen.
+// Notwendige Variablen:
+//   SFTP_HOST, SFTP_PORT (optional, Standard 22), SFTP_USERNAME, SFTP_PASSWORD
 const sftpConfig = {
-  host: 'access-5000008740.ud-webspace.de',    // z.B. 'sftp.meinserver.de'
-  port: 22,
-  username: 'a4467',
-  password: 'Did!HvN2017u',
+  host: process.env.SFTP_HOST,
+  port: process.env.SFTP_PORT ? Number(process.env.SFTP_PORT) : 22,
+  username: process.env.SFTP_USERNAME,
+  password: process.env.SFTP_PASSWORD,
 };
 
 // Remote-Verzeichnis auf dem SFTP-Server, aus dem .gz-Dateien geholt werden
