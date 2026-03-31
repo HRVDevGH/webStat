@@ -10,35 +10,42 @@
       max-width: 900px;
       margin: 2rem auto;
       padding: 0 1rem;
-      background: #f5f5f5;
+      background: #121212;
+      color: #e5e5e5;
     }
     h1 {
       text-align: center;
+      color: #ffffff;
     }
     button {
       display: inline-block;
       padding: 0.5rem 1rem;
       font-size: 0.95rem;
       border-radius: 4px;
-      border: none;
-      background: #0078d4;
-      color: #fff;
+      border: 1px solid #333;
+      background: #1f6feb;
+      color: #ffffff;
       cursor: pointer;
       margin-top: 0.5rem;
     }
+    button:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
     #meta {
       margin-top: 1rem;
-      background: #fff;
+      background: #1e1e1e;
       padding: 1rem;
       border-radius: 4px;
-      border: 1px solid #ddd;
+      border: 1px solid #333;
+      white-space: pre-wrap;
     }
     #result {
       margin-top: 1rem;
-      background: #fff;
+      background: #1e1e1e;
       padding: 1rem;
       border-radius: 4px;
-      border: 1px solid #ddd;
+      border: 1px solid #333;
       max-height: 60vh;
       overflow-y: auto;
     }
@@ -46,6 +53,7 @@
       width: 98%;
       table-layout: fixed;
       border-collapse: collapse;
+      color: #e5e5e5;
     }
     #result th, #result td {
       padding: 4px 6px;
@@ -53,13 +61,14 @@
       vertical-align: top;
     }
     #result thead th {
-      border-bottom: 1px solid #ccc;
+      border-bottom: 1px solid #444;
+      background: #181818;
     }
     #result tbody tr:nth-child(even) {
-      background: #f0f4f8;
+      background: #181818;
     }
     #result tbody tr:nth-child(odd) {
-      background: #ffffff;
+      background: #141414;
     }
     #result td.urlCell {
       max-width: 320px;
@@ -74,7 +83,7 @@
       text-overflow: ellipsis;
     }
     #result tbody tr.lowEmphasis {
-      color: #888;
+      color: #999;
     }
   </style>
 </head>
