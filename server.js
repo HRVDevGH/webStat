@@ -5,6 +5,7 @@ const fs = require('fs');
 const zlib = require('zlib');
 const Client = require('ssh2-sftp-client');
 const crypto = require('crypto');
+const OpenAI = require('openai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -140,13 +141,25 @@ app.get('/download-dir-status', (req, res) => {
 });
 
 app.post('/download', async (req, res) => {
+  // Fortschritt als Server-Sent Events (SSE) streamen
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  function send(data) {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }
+
   const sftp = new Client();
 
   try {
     const meta = loadDownloadMeta();
 
+    send({ step: 'connect', label: 'Verbinde mit SFTP-Server…', pct: 1 });
     await sftp.connect(sftpConfig);
 
+    send({ step: 'scan', label: 'Lese Dateiliste vom SFTP-Server…', pct: 3 });
     const fileList = await sftp.list(remoteDirectory);
     const gzFiles = fileList.filter((item) => {
       if (item.type !== '-') return false;
@@ -168,12 +181,14 @@ app.post('/download', async (req, res) => {
     const skippedFiles = [];
     const localPaths = [];
 
-    // Schritt 1: Alle passenden Archive herunterladen (nur neue/ungeänderte)
+    // Schritt 1: Archive herunterladen – 5 % → 55 %
+    let downloadDone = 0;
     for (const file of gzFiles) {
       const key = file.name;
       const existing = meta.files && meta.files[key];
       const remoteSize = file.size;
       const remoteMtime = file.modifyTime;
+      const pct = Math.round(2 + (downloadDone / Math.max(totalRemoteFiles, 1)) * 5);
 
       if (
         existing &&
@@ -182,28 +197,29 @@ app.post('/download', async (req, res) => {
         existing.remoteSize === remoteSize &&
         existing.remoteMtime === remoteMtime
       ) {
-        // Datei wurde bereits heruntergeladen und verarbeitet, überspringen
         skippedFiles.push(key);
+        downloadDone++;
+        send({ step: 'download', label: `Überspringe (unverändert): ${key}  (${downloadDone}/${totalRemoteFiles})`, file: key, pct });
         continue;
       }
 
-      const remotePath = `${remoteDirectory.replace(/\/+$/,'')}/${file.name}`; // POSIX-Pfad
+      send({ step: 'download', label: `Herunterladen: ${key}  (${downloadDone + 1}/${totalRemoteFiles})`, file: key, pct });
+      const remotePath = `${remoteDirectory.replace(/\/+$/, '')}/${file.name}`;
       const localPath = path.join(localDirectory, file.name);
 
       await sftp.fastGet(remotePath, localPath);
       downloadedFiles.push(file.name);
       localPaths.push({ localPath, key, remoteSize, remoteMtime });
+      downloadDone++;
     }
 
-    // Verbindung zum SFTP-Server kann nach dem Download beendet werden
     await sftp.end();
 
-    // Schritt 2+3: Alle neu geladenen Archive entpacken und in Tagesdateien aufteilen
+    // Schritt 2: Entpacken – 55 % → 75 %
     const processedExtractedFiles = new Set();
     let processedBytes = 0;
     let skippedBytes = 0;
 
-    // Bytes der übersprungenen Archive mitrechnen (für Gesamtübersicht)
     for (const file of gzFiles) {
       if (skippedFiles.includes(file.name)) {
         const size = typeof file.size === 'number' ? file.size : 0;
@@ -211,8 +227,12 @@ app.post('/download', async (req, res) => {
       }
     }
 
+    const totalToExtract = localPaths.length;
+    let extractDone = 0;
     for (const item of localPaths) {
       const { localPath, key, remoteSize, remoteMtime } = item;
+      const pct = Math.round(7 + (extractDone / Math.max(totalToExtract, 1)) * 90);
+      send({ step: 'extract', label: `Entpacke: ${key}  (${extractDone + 1}/${totalToExtract})`, file: key, pct });
       try {
         const extractedNames = await extractAndNormalizeLog(localPath);
         if (Array.isArray(extractedNames)) {
@@ -221,16 +241,14 @@ app.post('/download', async (req, res) => {
           processedExtractedFiles.add(extractedNames);
         }
 
-        // Nach erfolgreicher Verarbeitung Bytes und Hash erfassen
         if (typeof remoteSize === 'number') {
           processedBytes += remoteSize;
         }
 
-        // Hash berechnen und in Metadatei speichern
         try {
           const hash = await sha256File(localPath);
           meta.files[key] = {
-            remotePath: `${remoteDirectory.replace(/\/+$/,'')}/${key}`,
+            remotePath: `${remoteDirectory.replace(/\/+$/, '')}/${key}`,
             remoteSize,
             remoteMtime,
             hash,
@@ -242,59 +260,65 @@ app.post('/download', async (req, res) => {
       } catch (e) {
         console.error('Fehler beim automatischen Entpacken/Normalisieren:', e);
       }
+      extractDone++;
     }
 
-    // Metadatei aktualisieren
     saveDownloadMeta(meta);
 
-    // Tägliche Besuchsstatistik für alle betroffenen Tagesdateien aktualisieren
+    // Schritt 3: Tagesstatistiken – 75 % → 98 %
     const dailyStats = loadDailyStats();
     const updatedDates = [];
-    for (const fileName of processedExtractedFiles) {
+    const allExtracted = Array.from(processedExtractedFiles);
+    const totalDates = allExtracted.length;
+    let dailyDone = 0;
+    let lastDay = '';
+    for (const fileName of allExtracted) {
+      const pct = Math.round(97 + (dailyDone / Math.max(totalDates, 1)) * 2);
+      send({ step: 'daily', label: `Analysiere: ${fileName}  (${dailyDone + 1}/${totalDates})`, file: fileName, pct, lastDay });
       try {
         const stats = await computeDailyStatsForFile(fileName);
         if (stats && stats.date) {
           dailyStats[stats.date] = stats;
           updatedDates.push(stats.date);
+          lastDay = stats.date;
         }
       } catch (statsErr) {
         console.error('Fehler beim Berechnen der Tagesstatistik für', fileName, statsErr);
       }
+      dailyDone++;
     }
     if (updatedDates.length > 0) {
       saveDailyStats(dailyStats);
     }
 
-    // Für die Fortschrittsanzeige gelten auch übersprungene Dateien als "bereits bearbeitet"
     const processedFilesTotal = downloadedFiles.length + skippedFiles.length;
     const processedBytesTotal = processedBytes + skippedBytes;
 
-    res.json({
-      success: true,
-      message: 'Download und Verarbeitung abgeschlossen',
-      count: downloadedFiles.length,
-      files: downloadedFiles,
-      skipped: skippedFiles,
-      totalRemoteFiles,
-      totalRemoteBytes,
-      processedFiles: processedFilesTotal,
-      processedBytes: processedBytesTotal,
-      skippedBytes,
-      extracted: Array.from(processedExtractedFiles),
-      dailyStatsUpdated: updatedDates,
+    send({
+      step: 'done',
+      label: 'Abgeschlossen',
+      pct: 100,
+      result: {
+        success: true,
+        message: 'Download und Verarbeitung abgeschlossen',
+        count: downloadedFiles.length,
+        files: downloadedFiles,
+        skipped: skippedFiles,
+        totalRemoteFiles,
+        totalRemoteBytes,
+        processedFiles: processedFilesTotal,
+        processedBytes: processedBytesTotal,
+        skippedBytes,
+        extracted: Array.from(processedExtractedFiles),
+        dailyStatsUpdated: updatedDates,
+      },
     });
+    res.end();
   } catch (error) {
     console.error('SFTP-Fehler:', error);
-    try {
-      await sftp.end();
-    } catch (_) {}
-
-    res.status(500).json({
-      success: false,
-      message: `Fehler beim Herunterladen der Dateien vom Host ${sftpConfig.host}`,
-      error: error.message,
-      host: sftpConfig.host,
-    });
+    try { await sftp.end(); } catch (_) {}
+    send({ step: 'error', label: `Fehler: ${error.message}`, pct: 0 });
+    res.end();
   }
 });
 
@@ -559,13 +583,15 @@ app.get('/files', (req, res) => {
       return res.json({ success: true, files: [] });
     }
 
-    const files = fs.readdirSync(localDirectory).filter((name) => {
-      const fullPath = path.join(localDirectory, name);
-      return (
-        fs.statSync(fullPath).isFile() &&
-        name.toLowerCase().endsWith('.gz')
-      );
-    });
+    const files = fs.readdirSync(localDirectory)
+      .filter((name) => {
+        const fullPath = path.join(localDirectory, name);
+        return fs.statSync(fullPath).isFile() && name.toLowerCase().endsWith('.gz');
+      })
+      .map((name) => {
+        const st = fs.statSync(path.join(localDirectory, name));
+        return { name, size: st.size, mtime: st.mtime.toISOString() };
+      });
 
     res.json({ success: true, files });
   } catch (error) {
@@ -582,20 +608,31 @@ app.get('/files', (req, res) => {
 app.get('/unzipped', (req, res) => {
   try {
     if (!fs.existsSync(extractedDirectory)) {
-      return res.json({ success: true, files: [] });
+      return res.json({ success: true, files: [], total: 0 });
     }
 
-    const files = fs
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    const limit  = Math.min(100, Math.max(1, parseInt(req.query.limit,  10) || 25));
+
+    const allFiles = fs
       .readdirSync(extractedDirectory)
       .filter((name) => {
         const fullPath = path.join(extractedDirectory, name);
-        return (
-          fs.statSync(fullPath).isFile() &&
-          name.toLowerCase().endsWith('.log')
-        );
+        return fs.statSync(fullPath).isFile() && name.toLowerCase().endsWith('.log');
+      })
+      .map((name) => {
+        const st = fs.statSync(path.join(extractedDirectory, name));
+        return { name, size: st.size, mtime: st.mtime.toISOString() };
+      })
+      .sort((a, b) => {
+        // Datum aus Dateinamen extrahieren (z.B. access-2026-03-31.log)
+        const dateA = a.name.match(/(\d{4}-\d{2}-\d{2})/)?.[1] ?? '';
+        const dateB = b.name.match(/(\d{4}-\d{2}-\d{2})/)?.[1] ?? '';
+        return dateB.localeCompare(dateA); // absteigend: neueste zuerst
       });
 
-    res.json({ success: true, files });
+    const files = allFiles.slice(offset, offset + limit);
+    res.json({ success: true, files, total: allFiles.length, offset, limit });
   } catch (error) {
     console.error('Fehler beim Auflisten der entpackten Dateien:', error);
     res.status(500).json({
@@ -988,6 +1025,212 @@ app.get('/daily-stats-last30', (req, res) => {
       message: 'Fehler beim Lesen der letzten 30 Tagesstatistiken',
       error: error.message,
     });
+  }
+});
+
+// KI-Analyse der letzten 90 Tage via GitHub Models (gpt-4o-mini)
+app.post('/ai-analyze', async (req, res) => {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    return res.status(500).json({ success: false, error: 'GITHUB_TOKEN nicht konfiguriert.' });
+  }
+
+  const dailyStats = loadDailyStats();
+  const entries = Object.values(dailyStats)
+    .filter((d) => d && d.date)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-90);
+
+  if (!entries.length) {
+    return res.status(400).json({ success: false, error: 'Keine Tagesstatistiken vorhanden. Bitte zuerst Dateien herunterladen und analysieren.' });
+  }
+
+  const statsJson = JSON.stringify(entries.map((d) => ({
+    date: d.date,
+    total: d.visitsTotal ?? 0,
+    human: d.visitsHuman ?? 0,
+    bot: d.visitsBots ?? 0,
+    ai: d.visitsAi ?? 0,
+  })));
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  try {
+    const client = new OpenAI({
+      baseURL: 'https://models.inference.ai.azure.com',
+      apiKey: token,
+    });
+
+    const stream = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      stream: true,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Du bist ein Webanalyse-Experte. Du bekommst Tagesstatistiken einer Website als JSON mit den Feldern ' +
+            'date (Datum), total (Gesamtaufrufe), human (menschliche Besucher), bot (Bots), ai (KI-Crawler). ' +
+            'Analysiere die Daten auf Deutsch und berichte über: Trends bei menschlichen Besuchern, ' +
+            'Bot-Auffälligkeiten oder Angriffsmuster, KI-Crawler-Entwicklung, Wochentags-Muster, ' +
+            'besondere Ausreißer und konkrete Handlungsempfehlungen. Antworte strukturiert mit Überschriften.',
+        },
+        {
+          role: 'user',
+          content: `Hier sind die Tagesstatistiken der letzten ${entries.length} Tage:\n${statsJson}`,
+        },
+      ],
+    });
+
+    for await (const chunk of stream) {
+      const text = chunk.choices[0]?.delta?.content ?? '';
+      if (text) {
+        res.write(`data: ${JSON.stringify({ text })}\n\n`);
+      }
+    }
+    res.write('data: {"done":true}\n\n');
+    res.end();
+  } catch (err) {
+    console.error('KI-Analyse Fehler:', err);
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
+  }
+});
+
+// KI-Analyse der Rohdaten der letzten 30 Tage (access-YYYY-MM-DD.log)
+app.post('/ai-analyze-raw', async (req, res) => {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    return res.status(500).json({ success: false, error: 'GITHUB_TOKEN nicht konfiguriert.' });
+  }
+
+  if (!fs.existsSync(extractedDirectory)) {
+    return res.status(400).json({ success: false, error: 'Kein unzipped-Verzeichnis gefunden.' });
+  }
+
+  // Letzte 30 Tage bestimmen
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 30);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  const logFiles = fs.readdirSync(extractedDirectory)
+    .filter((name) => {
+      const m = /^access-(\d{4}-\d{2}-\d{2})\.log$/.exec(name);
+      return m && m[1] >= cutoffStr;
+    })
+    .sort().reverse();
+
+  if (!logFiles.length) {
+    return res.status(400).json({ success: false, error: 'Keine Log-Dateien der letzten 30 Tage gefunden.' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  try {
+    // Pro Datei max. 300 Zeilen sampeln – nur Einträge zwischen 10:00 und 16:00 Uhr
+    const SAMPLE_PER_FILE = 300;
+    const sampleLines = [];
+
+    // Apache-Zeitformat: [31/Mar/2026:14:23:01 +0200] → Stunde und Minute extrahieren
+    const timeInWindowRegex = /\[[\d]{2}\/\w+\/\d{4}:(\d{2}):(\d{2}):\d{2} [+\-]\d{4}\]/;
+
+    for (const name of logFiles) {
+      const fullPath = path.join(extractedDirectory, name);
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const lines = content.split('\n').filter((line) => {
+        if (!line) return false;
+        // Nur Zeilen für www.hrv.de
+        if (!line.includes('www.hrv.de')) return false;
+        // Statische Ressourcen und Bilder ignorieren
+        if (/\.(ico|js|css|png|jpg|jpeg|gif|svg|webp|bmp|woff2?|ttf|eot)("| )/.test(line)) return false;
+        // HTTP-Statuscode extrahieren: nach "GET /pfad HTTP/1.1" folgt der Status
+        const statusMatch = /"\s+(\d{3})\s+/.exec(line);
+        if (statusMatch) {
+          const status = parseInt(statusMatch[1], 10);
+          // 3xx und 404 ignorieren
+          if (status >= 300 && status < 400) return false;
+          if (status === 404) return false;
+        }
+        // Zeitfenster 07:30–21:00
+        const m = timeInWindowRegex.exec(line);
+        if (!m) return false;
+        const totalMinutes = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+        return totalMinutes >= 7 * 60 + 30 && totalMinutes < 21 * 60;
+      });
+      // Von hinten sampeln → neueste Einträge der Datei zuerst
+      const reversed = lines.slice().reverse();
+      const step = Math.max(1, Math.floor(reversed.length / SAMPLE_PER_FILE));
+      for (let i = 0; i < reversed.length && sampleLines.length < logFiles.length * SAMPLE_PER_FILE; i += step) {
+        sampleLines.push(reversed[i].replace(/\b(\d{1,3}\.\d{1,3}\.\d{1,3})\.0\b/g, '$1.*'));
+      }
+    }
+
+    // Token-Budget: 8000 gesamt – ca. 600 für System-/User-Prompt-Overhead → 7400 für Rohdaten
+    // Schätzung: 1 Token ≈ 4 Zeichen
+    const TOKEN_BUDGET = 7400;
+    let totalChars = 0;
+    const budgetedLines = [];
+    for (const line of sampleLines) {
+      const lineChars = line.length + 1; // +1 für '\n'
+      if (totalChars + lineChars > TOKEN_BUDGET * 4) break;
+      budgetedLines.push(line);
+      totalChars += lineChars;
+    }
+
+    const rawSample = budgetedLines.join('\n');
+    const actualDays = logFiles.length;
+    const dateFrom = logFiles[logFiles.length - 1].slice(7, 17);
+    const dateTo = logFiles[0].slice(7, 17);
+
+    res.write(`data: ${JSON.stringify({ info: `Werte ${actualDays} Tag(e) aus (${dateFrom} bis ${dateTo}), ${budgetedLines.length} Log-Zeilen` })}\n\n`);
+
+    const client = new OpenAI({
+      baseURL: 'https://models.inference.ai.azure.com',
+      apiKey: token,
+    });
+
+    const stream = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      stream: true,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Du bist ein Webanalyse-Experte. Du bekommst eine repräsentative Auswahl von Apache-Access-Log-Zeilen ' +
+            'der letzten 30 Tage. Jede Zeile hat das Format: IP - - [Datum] "Methode Pfad Protokoll" Status Bytes Referer UserAgent. ' +
+            'Analysiere auf Deutsch und berichte über: ' +
+            '1) Häufigste aufgerufene Seiten/Pfade, ' +
+            '2) Auffällige IP-Adressen oder Angriffsmuster (z.B. viele 4xx-Fehler, Scanner), ' +
+            '3) HTTP-Statuscodes (Fehler 4xx/5xx häufig?), ' +
+            '4) Bot- und KI-Crawler-User-Agents, ' +
+            '5) Ungewöhnliche Anfragen oder Sicherheitshinweise, ' +
+            '6) Konkrete Handlungsempfehlungen. ' +
+            'Antworte strukturiert mit Überschriften.',
+        },
+        {
+          role: 'user',
+          content: `Analysiere diese ${budgetedLines.length} Apache-Log-Zeilen aus ${actualDays} Tagen (${dateFrom} bis ${dateTo}):\n\n${rawSample}`,
+        },
+      ],
+    });
+
+    for await (const chunk of stream) {
+      const text = chunk.choices[0]?.delta?.content ?? '';
+      if (text) {
+        res.write(`data: ${JSON.stringify({ text })}\n\n`);
+      }
+    }
+    res.write('data: {"done":true}\n\n');
+    res.end();
+  } catch (err) {
+    console.error('KI-Rohdaten-Analyse Fehler:', err);
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
   }
 });
 

@@ -35,7 +35,8 @@ body.page-index #status {
   padding: 1rem;
   border-radius: 4px;
   border: 1px solid #333;
-  min-height: 3rem;
+  height: 120px;
+  overflow-y: auto;
 }
 body.page-index #dayProgress {
   margin-top: 0.75rem;
@@ -61,12 +62,13 @@ body.page-index .day-progress-bar-inner {
   top: 0;
   bottom: 0;
   width: 0;
-  background: #1f6feb;
+  background: linear-gradient(90deg, #0b2a5b, #1f6feb);
+  background-size: 600px 100%;
   transition: width 0.4s ease-out;
 }
 body.page-index .day-progress-bar-inner.loading {
-  width: 40%;
-  animation: loading-bar 1.2s ease-in-out infinite;
+  width: 50%;
+  animation: loading-bar 1.4s ease-in-out infinite;
 }
 @keyframes loading-bar {
   0% { left: -40%; }
@@ -83,7 +85,7 @@ body.page-index .panel {
 body.page-index #fileList,
 body.page-index #unzippedList {
   margin-top: 0.5rem;
-  max-height: 250px;
+  height: 250px;
   overflow-y: auto;
   border: 1px solid #333;
   border-radius: 4px;
@@ -102,6 +104,59 @@ body.page-index #fileList button.selected,
 body.page-index #unzippedList button.selected {
   background: linear-gradient(135deg, #5a5a5a, #9a9a9a);
   color: #ffffff;
+}
+
+/* File-Explorer-Tabelle */
+body.page-index .file-explorer {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+}
+body.page-index .file-explorer thead tr {
+  background: #2a2a2a;
+  color: #aaa;
+  user-select: none;
+  border-bottom: 1px solid #444;
+}
+body.page-index .file-explorer th {
+  padding: 5px 10px;
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+body.page-index .file-explorer th.col-size,
+body.page-index .file-explorer td.col-size {
+  text-align: right;
+  min-width: 70px;
+}
+body.page-index .file-explorer th.col-date,
+body.page-index .file-explorer td.col-date {
+  min-width: 140px;
+  color: #aaa;
+}
+body.page-index .file-explorer tbody tr {
+  cursor: pointer;
+  border-bottom: 1px solid #2a2a2a;
+  transition: background 0.1s;
+}
+body.page-index .file-explorer tbody tr:hover {
+  background: #2c2c2c;
+}
+body.page-index .file-explorer tbody tr.selected {
+  background: #1a3a6b;
+}
+body.page-index .file-explorer td {
+  padding: 5px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 380px;
+}
+body.page-index .file-explorer td.col-icon {
+  width: 24px;
+  padding-right: 2px;
+  font-size: 1rem;
 }
 body.page-index #lastModifiedInfo {
   text-align: center;

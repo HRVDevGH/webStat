@@ -2,19 +2,19 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8" />
-  <title>SFTP .gz Downloader</title>
+  <title>webStat LogAnalyzer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="/styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="page-index">
-  <h1>SFTP .gz Downloader</h1>
+  <h1>webStat LogAnalyzer</h1>
   <p>
-    Klicke auf den Button, um alle .gz-Dateien vom konfigurierten SFTP-Server
-    herunterzuladen und lokal im Verzeichnis <code>downloads/</code> zu speichern.
+    Klicke auf den Button, um alle access.log.gz-Dateien vom konfigurierten SFTP-Server
+    herunterzuladen, lokal im Verzeichnis <code>downloads</code> zu speichern und nach Tagen zu trennen.
   </p>
   <div id="lastModifiedInfo" style="text-align:center; font-size:0.9rem; color:#555;"></div>
-  <button id="downloadBtn" style="display:none" disabled>Download starten</button>
+  <button id="downloadBtn" style="display:none" disabled>Download und Analyse starten</button>
   <div id="status"></div>
   <div id="dayProgress"></div>
 
@@ -22,20 +22,17 @@
     <h2>Bereits heruntergeladene Dateien</h2>
     <p>
       Hier werden die .gz-Archive angezeigt, die sich aktuell im Verzeichnis
-      <code>downloads/</code> befinden. Wähle ein Archiv aus und klicke auf
-      "Ausgewählte Datei entpacken", um sie in ein Unterverzeichnis zu entpacken.
+      <code>downloads</code> befinden.
     </p>
     <button id="refreshFilesBtn">Liste aktualisieren</button>
     <div id="fileList"></div>
-    <button id="extractBtn" disabled>Ausgewählte Datei entpacken</button>
-    <div id="extractStatus" style="margin-top:0.5rem; white-space:pre-wrap;"></div>
   </div>
 
   <div class="panel">
     <h2>Entpackte Dateien</h2>
     <p>
       Hier werden nur die entpackten Dateien aus dem Unterverzeichnis von
-      <code>downloads/</code> angezeigt. Wähle eine Datei aus und klicke auf
+      <code>unzipped</code> angezeigt. Wähle eine Datei aus und klicke auf
       "Ausgewählte entpackte Datei analysieren", um eine Vorschau zu sehen.
     </p>
     <button id="refreshUnzippedBtn">Liste der entpackten Dateien aktualisieren</button>
@@ -56,6 +53,29 @@
     <div style="margin-top:1rem; height:260px;">
       <canvas id="dailyStatsChart"></canvas>
     </div>
+  </div>
+
+  <div class="panel">
+    <h2>KI-Analyse</h2>
+    <p>
+      Lässt die letzten 90 Tage Tagesstatistiken von <strong>gpt-4o-mini</strong> via GitHub Models
+      analysieren – Trends, Bot-Muster, KI-Crawler-Entwicklung und Handlungsempfehlungen.
+    </p>
+    <button id="aiAnalyzeBtn">KI-Analyse starten</button>
+    <div id="aiAnalysisStatus" style="margin-top:0.5rem; font-size:0.85rem; color:#888;"></div>
+    <div id="aiAnalysisResult" style="margin-top:0.75rem; white-space:pre-wrap; line-height:1.6; height:400px; overflow-y:auto; padding:0.5rem; background:#161616; border:1px solid #333; border-radius:4px;"></div>
+  </div>
+
+  <div class="panel">
+    <h2>KI-Analyse (Rohdaten)</h2>
+    <p>
+      Lässt eine repräsentative Auswahl der Apache-Log-Rohdaten der letzten <strong>14 Tage</strong>
+      von <strong>gpt-4o-mini</strong> analysieren – häufigste Seiten, Angriffsmuster, auffällige
+      IPs, HTTP-Fehler, Bot-User-Agents und Sicherheitshinweise.
+    </p>
+    <button id="aiAnalyzeRawBtn">KI-Rohdaten-Analyse starten</button>
+    <div id="aiAnalysisRawStatus" style="margin-top:0.5rem; font-size:0.85rem; color:#888;"></div>
+    <div id="aiAnalysisRawResult" style="margin-top:0.75rem; white-space:pre-wrap; line-height:1.6; height:400px; overflow-y:auto; padding:0.5rem; background:#161616; border:1px solid #333; border-radius:4px;"></div>
   </div>
 
   <script>
@@ -84,9 +104,7 @@
     const dayProgressDiv = document.getElementById('dayProgress');
     const refreshFilesBtn = document.getElementById('refreshFilesBtn');
     const fileListDiv = document.getElementById('fileList');
-    const extractBtn = document.getElementById('extractBtn');
     const analyzeBtn = document.getElementById('analyzeBtn');
-    const extractStatusDiv = document.getElementById('extractStatus');
     const analyzeStatusDiv = document.getElementById('analyzeStatus');
     const refreshUnzippedBtn = document.getElementById('refreshUnzippedBtn');
     const unzippedListDiv = document.getElementById('unzippedList');
@@ -95,7 +113,6 @@
     const dailyStatsChartCanvas = document.getElementById('dailyStatsChart');
     let dailyStatsChartInstance = null;
 
-    let selectedGzFile = null;
     let selectedUnzippedFile = null;
 
     function formatBytes(bytes) {
@@ -110,80 +127,36 @@
       return `${value.toFixed(1)} ${units[i]}`;
     }
 
-    function renderPipelineProgress(totalFiles, processedFiles, totalBytes, processedBytes) {
+    /**
+     * Rendert eine einzelne Fortschrittsleiste.
+     * @param {number|null} ratio  0–1 für Füllstand, null = laufende Animation
+     * @param {string} label       Beschriftungstext über dem Balken
+     */
+    function renderProgress(ratio, label) {
       dayProgressDiv.innerHTML = '';
 
-      const fileRatio = totalFiles > 0 ? Math.min(processedFiles / totalFiles, 1) : 1;
-      const byteRatio = totalBytes > 0 ? Math.min(processedBytes / totalBytes, 1) : 1;
+      const row = document.createElement('div');
+      row.className = 'day-progress-row';
 
-      const steps = [
-        {
-          id: 'download',
-          label: `1/3: Download der access.log-Archive (${processedFiles}/${totalFiles} Dateien, ${formatBytes(processedBytes)} von ${formatBytes(totalBytes)})`,
-          ratio: Math.max(fileRatio, byteRatio),
-        },
-        {
-          id: 'unzip',
-          label: '2/3: Entpacken der Archive (abgeschlossen für heruntergeladene Dateien)',
-          ratio: fileRatio,
-        },
-        {
-          id: 'daily',
-          label: '3/3: Erstellen der Tagesdateien (abgeschlossen für heruntergeladene Dateien)',
-          ratio: fileRatio,
-        },
-      ];
+      const labelEl = document.createElement('div');
+      labelEl.className = 'day-progress-label';
+      labelEl.textContent = label;
 
-      steps.forEach((step) => {
-        const row = document.createElement('div');
-        row.className = 'day-progress-row';
+      const barOuter = document.createElement('div');
+      barOuter.className = 'day-progress-bar';
 
-        const label = document.createElement('div');
-        label.className = 'day-progress-label';
-        label.textContent = step.label;
+      const barInner = document.createElement('div');
+      barInner.className = 'day-progress-bar-inner';
+      if (ratio === null) {
+        barInner.classList.add('loading');
+      } else {
+        barInner.style.width = `${Math.round(Math.min(ratio, 1) * 100)}%`;
+      }
+      barOuter.appendChild(barInner);
 
-        const barOuter = document.createElement('div');
-        barOuter.className = 'day-progress-bar';
-
-        const barInner = document.createElement('div');
-        barInner.className = 'day-progress-bar-inner';
-        barInner.style.width = `${Math.round(step.ratio * 100)}%`;
-        barOuter.appendChild(barInner);
-
-        row.appendChild(label);
-        row.appendChild(barOuter);
-        dayProgressDiv.appendChild(row);
-      });
-    }
-
-    function renderLoadingProgress() {
-      dayProgressDiv.innerHTML = '';
-
-      const steps = [
-        '1/3: Download der access.log-Archive wird gestartet...',
-        '2/3: Entpacken der Archive läuft...',
-        '3/3: Erstellen der Tagesdateien läuft...',
-      ];
-
-      steps.forEach((text) => {
-        const row = document.createElement('div');
-        row.className = 'day-progress-row';
-
-        const label = document.createElement('div');
-        label.className = 'day-progress-label';
-        label.textContent = text;
-
-        const barOuter = document.createElement('div');
-        barOuter.className = 'day-progress-bar';
-
-        const barInner = document.createElement('div');
-        barInner.className = 'day-progress-bar-inner loading';
-        barOuter.appendChild(barInner);
-
-        row.appendChild(label);
-        row.appendChild(barOuter);
-        dayProgressDiv.appendChild(row);
-      });
+      row.appendChild(labelEl);
+      row.appendChild(barOuter);
+      dayProgressDiv.appendChild(row);
     }
 
     async function checkDownloadDir() {
@@ -208,50 +181,115 @@
 
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      statusDiv.textContent = 'Download läuft...';
-      renderLoadingProgress();
+      statusDiv.textContent = 'Download läuft…';
+      renderProgress(null, '0% – Verbinde mit Server…');
       refreshFilesBtn.disabled = true;
       refreshUnzippedBtn.disabled = true;
-      extractBtn.disabled = true;
       analyzeBtn.disabled = true;
+
+      let lastResult = null;
 
       try {
         const response = await fetch('/download', { method: 'POST' });
-        const data = await response.json();
-
-        if (!response.ok || !data.success) {
-          throw new Error(data.error || data.message || 'Unbekannter Fehler');
+        if (!response.ok || !response.body) {
+          throw new Error('Server-Fehler beim Starten des Downloads');
         }
 
-        statusDiv.textContent = `Download abgeschlossen.\nAnzahl Archive: ${data.count}\n` +
-          (data.files.length ? 'Archive:\n' + data.files.join('\n') : 'Keine passenden .gz-Archive gefunden.');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        const totalFiles = typeof data.totalRemoteFiles === 'number' ? data.totalRemoteFiles : (data.count || 0);
-        const processedFiles = typeof data.processedFiles === 'number' ? data.processedFiles : (data.count || 0);
-        const totalBytes = typeof data.totalRemoteBytes === 'number' ? data.totalRemoteBytes : 0;
-        const processedBytes = typeof data.processedBytes === 'number' ? data.processedBytes : 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          // SSE-Events sind durch doppelten Zeilenumbruch getrennt
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() ?? '';
+          for (const part of parts) {
+            for (const line of part.split('\n')) {
+              if (!line.startsWith('data: ')) continue;
+              let ev;
+              try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+              if (ev.step === 'done') {
+                lastResult = ev.result;
+              } else if (ev.step === 'error') {
+                statusDiv.textContent = ev.label;
+                renderProgress(0, 'Fehler beim Verarbeiten.');
+              } else {
+                renderProgress(ev.pct / 100, `${ev.pct}% – ${ev.label}`);
+              }
+            }
+          }
+        }
 
-        renderPipelineProgress(totalFiles, processedFiles, totalBytes, processedBytes);
+        if (lastResult) {
+          const newFiles    = typeof lastResult.count === 'number' ? lastResult.count : 0;
+          const skipped     = Array.isArray(lastResult.skipped) ? lastResult.skipped.length : 0;
+          const extracted   = Array.isArray(lastResult.extracted) ? lastResult.extracted.length : 0;
+          const daysUpdated = Array.isArray(lastResult.dailyStatsUpdated) ? lastResult.dailyStatsUpdated.length : 0;
+
+          statusDiv.textContent =
+            `Download abgeschlossen.\nNeue Archive: ${newFiles}\n` +
+            (lastResult.files && lastResult.files.length
+              ? 'Archive:\n' + lastResult.files.join('\n')
+              : 'Keine neuen .gz-Archive heruntergeladen.');
+
+          renderProgress(1,
+            `100% – Abgeschlossen: ${newFiles} neue Archive heruntergeladen, ` +
+            `${skipped} übersprungen, ` +
+            `${extracted} Tagesdateien erstellt/aktualisiert, ` +
+            `${daysUpdated} Tage neu berechnet.`
+          );
+        }
       } catch (err) {
         statusDiv.textContent = 'Fehler: ' + err.message;
+        renderProgress(0, 'Fehler beim Verarbeiten.');
       } finally {
         btn.disabled = false;
         refreshFilesBtn.disabled = false;
         refreshUnzippedBtn.disabled = false;
-        extractBtn.disabled = true;
         analyzeBtn.disabled = true;
-        selectedGzFile = null;
         selectedUnzippedFile = null;
-        // Nach dem Download die Dateiliste aktualisieren
+        // Nach Download alle Listen und den Chart aktualisieren
         loadFiles();
+        loadUnzippedFiles();
+        loadDailyStatsChart();
       }
     });
 
+    function renderFileExplorer(container, files, icon, onSelect) {
+      const table = document.createElement('table');
+      table.className = 'file-explorer';
+      table.innerHTML = `<thead><tr>
+        <th class="col-icon"></th>
+        <th class="col-name">Name</th>
+        <th class="col-size">Größe</th>
+        <th class="col-date">Geändert</th>
+      </tr></thead>`;
+      const tbody = document.createElement('tbody');
+      files.forEach((file) => {
+        const tr = document.createElement('tr');
+        const mtime = new Date(file.mtime);
+        const dateStr = `${mtime.getFullYear()}-${String(mtime.getMonth()+1).padStart(2,'0')}-${String(mtime.getDate()).padStart(2,'0')}` +
+          ` ${String(mtime.getHours()).padStart(2,'0')}:${String(mtime.getMinutes()).padStart(2,'0')}`;
+        tr.innerHTML = `<td class="col-icon">${icon}</td>` +
+          `<td class="col-name" title="${file.name}">${file.name}</td>` +
+          `<td class="col-size">${formatBytes(file.size)}</td>` +
+          `<td class="col-date">${dateStr}</td>`;
+        tr.addEventListener('click', () => {
+          tbody.querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
+          tr.classList.add('selected');
+          onSelect(file.name);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      container.appendChild(table);
+    }
+
     async function loadFiles() {
       fileListDiv.textContent = 'Lade Dateiliste...';
-      extractStatusDiv.textContent = '';
-      extractBtn.disabled = true;
-      selectedGzFile = null;
 
       try {
         const response = await fetch('/files');
@@ -268,18 +306,7 @@
         }
 
         fileListDiv.innerHTML = '';
-        files.forEach((file) => {
-          const btnFile = document.createElement('button');
-          btnFile.textContent = file;
-          btnFile.addEventListener('click', () => {
-            selectedGzFile = file;
-            Array.from(fileListDiv.querySelectorAll('button')).forEach((b) => b.classList.remove('selected'));
-            btnFile.classList.add('selected');
-            // Liste /files liefert nur .gz-Dateien
-            extractBtn.disabled = false;
-          });
-          fileListDiv.appendChild(btnFile);
-        });
+        renderFileExplorer(fileListDiv, files, '🗜️', () => {});
       } catch (err) {
         fileListDiv.textContent = 'Fehler beim Laden der Dateiliste: ' + err.message;
       }
@@ -287,47 +314,33 @@
 
     refreshFilesBtn.addEventListener('click', loadFiles);
 
-    extractBtn.addEventListener('click', async () => {
-      if (!selectedGzFile) return;
-      extractBtn.disabled = true;
-      extractStatusDiv.textContent = 'Entpacken läuft...';
-
-      try {
-        const response = await fetch('/extract', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileName: selectedGzFile }),
-        });
-        const data = await response.json();
-
-        if (!response.ok || !data.success) {
-          throw new Error(data.error || data.message || 'Fehler beim Entpacken');
-        }
-
-        extractStatusDiv.textContent = `Erfolg: ${data.message}\nQuelle: ${data.source}\nZiel: ${data.target}`;
-      } catch (err) {
-        extractStatusDiv.textContent = 'Fehler: ' + err.message;
-      } finally {
-        extractBtn.disabled = false;
-        // Nach dem Entpacken die Liste der entpackten Dateien aktualisieren
-        loadUnzippedFiles();
-      }
-    });
-
     analyzeBtn.addEventListener('click', () => {
       if (!selectedUnzippedFile) return;
       const url = `/analysis.html?file=${encodeURIComponent(selectedUnzippedFile)}`;
       window.location.href = url;
     });
 
-    async function loadUnzippedFiles() {
-      unzippedListDiv.textContent = 'Lade entpackte Dateien...';
-      analyzeStatusDiv.textContent = '';
-      analyzeBtn.disabled = true;
-      selectedUnzippedFile = null;
+    // --- Entpackte Dateien: Infinite-Scroll-Zustand ---
+    let unzippedOffset = 0;
+    let unzippedTotal  = 0;
+    let unzippedLoading = false;
+    const UNZIPPED_PAGE = 25;
+
+    async function loadUnzippedFiles(reset = true) {
+      if (reset) {
+        unzippedOffset = 0;
+        unzippedTotal  = 0;
+        unzippedListDiv.innerHTML = '';
+        analyzeStatusDiv.textContent = '';
+        analyzeBtn.disabled = true;
+        selectedUnzippedFile = null;
+        unzippedListDiv.textContent = 'Lade entpackte Dateien...';
+      }
+      if (unzippedLoading) return;
+      unzippedLoading = true;
 
       try {
-        const response = await fetch('/unzipped');
+        const response = await fetch(`/unzipped?offset=${unzippedOffset}&limit=${UNZIPPED_PAGE}`);
         const data = await response.json();
 
         if (!response.ok || !data.success) {
@@ -335,27 +348,66 @@
         }
 
         const files = data.files || [];
-        if (!files.length) {
+        unzippedTotal = data.total ?? 0;
+
+        if (reset && !files.length) {
           unzippedListDiv.textContent = 'Keine entpackten Dateien gefunden.';
           return;
         }
 
-        unzippedListDiv.innerHTML = '';
+        if (reset) unzippedListDiv.innerHTML = '';
+
+        // Tabelle anhängen oder vorhandene erweitern
+        let tbody = unzippedListDiv.querySelector('table.file-explorer tbody');
+        if (!tbody) {
+          const table = document.createElement('table');
+          table.className = 'file-explorer';
+          table.innerHTML = `<thead><tr>
+            <th class="col-icon"></th>
+            <th class="col-name">Name</th>
+            <th class="col-size">Größe</th>
+            <th class="col-date">Geändert</th>
+          </tr></thead>`;
+          tbody = document.createElement('tbody');
+          table.appendChild(tbody);
+          unzippedListDiv.appendChild(table);
+        }
+
         files.forEach((file) => {
-          const btnFile = document.createElement('button');
-          btnFile.textContent = file;
-          btnFile.addEventListener('click', () => {
-            selectedUnzippedFile = file;
-            Array.from(unzippedListDiv.querySelectorAll('button')).forEach((b) => b.classList.remove('selected'));
-            btnFile.classList.add('selected');
+          const tr = document.createElement('tr');
+          const mtime = new Date(file.mtime);
+          const dateStr = `${mtime.getFullYear()}-${String(mtime.getMonth()+1).padStart(2,'0')}-${String(mtime.getDate()).padStart(2,'0')}` +
+            ` ${String(mtime.getHours()).padStart(2,'0')}:${String(mtime.getMinutes()).padStart(2,'0')}`;
+          tr.innerHTML = `<td class="col-icon">📄</td>` +
+            `<td class="col-name" title="${file.name}">${file.name}</td>` +
+            `<td class="col-size">${formatBytes(file.size)}</td>` +
+            `<td class="col-date">${dateStr}</td>`;
+          tr.addEventListener('click', () => {
+            tbody.querySelectorAll('tr').forEach((r) => r.classList.remove('selected'));
+            tr.classList.add('selected');
+            selectedUnzippedFile = file.name;
             analyzeBtn.disabled = false;
           });
-          unzippedListDiv.appendChild(btnFile);
+          tbody.appendChild(tr);
         });
+
+        unzippedOffset += files.length;
       } catch (err) {
-        unzippedListDiv.textContent = 'Fehler beim Laden der entpackten Dateien: ' + err.message;
+        if (reset) unzippedListDiv.textContent = 'Fehler beim Laden der entpackten Dateien: ' + err.message;
+      } finally {
+        unzippedLoading = false;
       }
     }
+
+    // Infinite Scroll: nächste Seite laden wenn fast am Ende
+    unzippedListDiv.addEventListener('scroll', () => {
+      if (unzippedLoading) return;
+      if (unzippedOffset >= unzippedTotal) return;
+      const el = unzippedListDiv;
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 60) {
+        loadUnzippedFiles(false);
+      }
+    });
 
     refreshUnzippedBtn.addEventListener('click', loadUnzippedFiles);
 
@@ -488,6 +540,105 @@
     loadFiles();
     loadUnzippedFiles();
     loadDailyStatsChart();
+
+    // KI-Analyse
+    const aiAnalyzeBtn = document.getElementById('aiAnalyzeBtn');
+    const aiAnalysisStatus = document.getElementById('aiAnalysisStatus');
+    const aiAnalysisResult = document.getElementById('aiAnalysisResult');
+
+    aiAnalyzeBtn.addEventListener('click', async () => {
+      aiAnalyzeBtn.disabled = true;
+      aiAnalysisStatus.textContent = 'Analyse läuft – gpt-4o-mini denkt nach…';
+      aiAnalysisResult.textContent = '';
+
+      try {
+        const response = await fetch('/ai-analyze', { method: 'POST' });
+        if (!response.ok || !response.body) {
+          const err = await response.json().catch(() => ({ error: 'Unbekannter Fehler' }));
+          throw new Error(err.error || 'Server-Fehler');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() ?? '';
+          for (const part of parts) {
+            for (const line of part.split('\n')) {
+              if (!line.startsWith('data: ')) continue;
+              let ev;
+              try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+              if (ev.done) {
+                aiAnalysisStatus.textContent = 'Analyse abgeschlossen.';
+              } else if (ev.error) {
+                aiAnalysisStatus.textContent = 'Fehler: ' + ev.error;
+              } else if (ev.text) {
+                aiAnalysisResult.textContent += ev.text;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        aiAnalysisStatus.textContent = 'Fehler: ' + err.message;
+      } finally {
+        aiAnalyzeBtn.disabled = false;
+      }
+    });
+    // KI-Rohdaten-Analyse
+    const aiAnalyzeRawBtn = document.getElementById('aiAnalyzeRawBtn');
+    const aiAnalysisRawStatus = document.getElementById('aiAnalysisRawStatus');
+    const aiAnalysisRawResult = document.getElementById('aiAnalysisRawResult');
+
+    aiAnalyzeRawBtn.addEventListener('click', async () => {
+      aiAnalyzeRawBtn.disabled = true;
+      aiAnalysisRawStatus.textContent = 'Lese Log-Rohdaten und starte Analyse…';
+      aiAnalysisRawResult.textContent = '';
+
+      try {
+        const response = await fetch('/ai-analyze-raw', { method: 'POST' });
+        if (!response.ok || !response.body) {
+          const err = await response.json().catch(() => ({ error: 'Unbekannter Fehler' }));
+          throw new Error(err.error || 'Server-Fehler');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() ?? '';
+          for (const part of parts) {
+            for (const line of part.split('\n')) {
+              if (!line.startsWith('data: ')) continue;
+              let ev;
+              try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+              if (ev.done) {
+                aiAnalysisRawStatus.textContent = 'Analyse abgeschlossen.';
+              } else if (ev.info) {
+                aiAnalysisRawStatus.textContent = ev.info;
+              } else if (ev.error) {
+                aiAnalysisRawStatus.textContent = 'Fehler: ' + ev.error;
+              } else if (ev.text) {
+                aiAnalysisRawResult.textContent += ev.text;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        aiAnalysisRawStatus.textContent = 'Fehler: ' + err.message;
+      } finally {
+        aiAnalyzeRawBtn.disabled = false;
+      }
+    });
   </script>
 </body>
 </html>

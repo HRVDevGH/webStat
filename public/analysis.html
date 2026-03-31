@@ -50,11 +50,12 @@
       nextBtn.disabled = true;
 
       try {
-        // Verfügbare entpackte Dateien laden, um Nachbar-Tage zu finden
-        const listResp = await fetch('/unzipped');
+        // Alle entpackten Dateien laden (kein Limit), um Nachbar-Tage zu finden
+        const listResp = await fetch('/unzipped?limit=9999');
         const listData = await listResp.json();
         if (listResp.ok && listData.success && Array.isArray(listData.files)) {
-          const files = listData.files.slice().sort();
+          // API gibt Objekte {name, size, mtime} zurück – Namen extrahieren und chronologisch sortieren
+          const files = listData.files.map((f) => f.name).sort();
           const idx = files.indexOf(fileName);
           if (idx !== -1) {
             const prevName = idx > 0 ? files[idx - 1] : null;
