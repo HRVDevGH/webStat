@@ -1,0 +1,15 @@
+{
+  "name": "webstat-sftp-downloader",
+  "version": "1.0.0",
+  "description": "Browserbasierte Node.js-App zum Herunterladen von .gz-Dateien von einem SFTP-Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "ssh2-sftp-client": "^10.0.0"
+  }
+}

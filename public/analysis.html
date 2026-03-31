@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>Logdatei-Analyse</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      background: #f5f5f5;
+    }
+    h1 {
+      text-align: center;
+    }
+    button {
+      display: inline-block;
+      padding: 0.5rem 1rem;
+      font-size: 0.95rem;
+      border-radius: 4px;
+      border: none;
+      background: #0078d4;
+      color: #fff;
+      cursor: pointer;
+      margin-top: 0.5rem;
+    }
+    #meta {
+      margin-top: 1rem;
+      background: #fff;
+      padding: 1rem;
+      border-radius: 4px;
+      border: 1px solid #ddd;
+    }
+    #result {
+      margin-top: 1rem;
+      background: #fff;
+      padding: 1rem;
+      border-radius: 4px;
+      border: 1px solid #ddd;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+    #result table {
+      width: 98%;
+      table-layout: fixed;
+      border-collapse: collapse;
+    }
+    #result th, #result td {
+      padding: 4px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    #result thead th {
+      border-bottom: 1px solid #ccc;
+    }
+    #result tbody tr:nth-child(even) {
+      background: #f0f4f8;
+    }
+    #result tbody tr:nth-child(odd) {
+      background: #ffffff;
+    }
+    #result td.urlCell {
+      max-width: 320px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #result td.uaCell {
+      max-width: 260px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #result tbody tr.lowEmphasis {
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <h1>Analyse der Logdatei</h1>
+  <button id="backBtn">Zurück zur Startseite</button>
+  <button id="prevBtn" disabled>&lt; Vorheriger Tag</button>
+  <button id="nextBtn" disabled>Nächster Tag &gt;</button>
+  <div id="meta"></div>
+  <div id="result"></div>
+
+  <script>
+    const backBtn = document.getElementById('backBtn');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const metaDiv = document.getElementById('meta');
+    const resultDiv = document.getElementById('result');
+
+    backBtn.addEventListener('click', () => {
+      window.location.href = '/';
+    });
+
+    function getSelectedFile() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('file');
+    }
+
+    async function loadAnalysis() {
+      const fileName = getSelectedFile();
+      if (!fileName) {
+        metaDiv.textContent = 'Keine Datei angegeben. Bitte über die Startseite eine Datei auswählen.';
+        return;
+      }
+
+      metaDiv.textContent = `Analysiere Datei: ${fileName}`;
+      resultDiv.textContent = 'Analyse läuft...';
+
+      // Vor/Nach-Buttons vorbereiten
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+
+      try {
+        // Verfügbare entpackte Dateien laden, um Nachbar-Tage zu finden
+        const listResp = await fetch('/unzipped');
+        const listData = await listResp.json();
+        if (listResp.ok && listData.success && Array.isArray(listData.files)) {
+          const files = listData.files.slice().sort();
+          const idx = files.indexOf(fileName);
+          if (idx !== -1) {
+            const prevName = idx > 0 ? files[idx - 1] : null;
+            const nextName = idx < files.length - 1 ? files[idx + 1] : null;
+
+            if (prevName) {
+              prevBtn.disabled = false;
+              prevBtn.onclick = () => {
+                window.location.href = `/analysis.html?file=${encodeURIComponent(prevName)}`;
+              };
+            }
+            if (nextName) {
+              nextBtn.disabled = false;
+              nextBtn.onclick = () => {
+                window.location.href = `/analysis.html?file=${encodeURIComponent(nextName)}`;
+              };
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Fehler beim Laden der entpackten Dateien:', err);
+      }
+
+      try {
+        const response = await fetch('/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileName }),
+        });
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || data.message || 'Fehler bei der Analyse');
+        }
+
+        const summary = [];
+        summary.push(`Datei: ${data.file}`);
+        summary.push(`Zeilen (ca.): ${data.lineCountApprox}`);
+        if (typeof data.visitsTotal === 'number') {
+          summary.push(`Besuche (insgesamt, 200er): ${data.visitsTotal}`);
+        }
+        if (typeof data.visitsHuman === 'number' || typeof data.visitsBots === 'number' || typeof data.visitsAi === 'number') {
+          summary.push('');
+          if (typeof data.visitsHuman === 'number') {
+            summary.push(`· Reguläre Besucher: ${data.visitsHuman}`);
+          }
+          if (typeof data.visitsBots === 'number') {
+            summary.push(`· Bots: ${data.visitsBots}`);
+          }
+          if (typeof data.visitsAi === 'number') {
+            summary.push(`· AI-Clients: ${data.visitsAi}`);
+          }
+        }
+        metaDiv.textContent = summary.join('\n');
+
+        // Pretty-Ansicht pro Besucher: erster/letzter Aufruf, IP, finale URL, Browser
+        resultDiv.innerHTML = '';
+
+        const heading = document.createElement('h2');
+        heading.textContent = 'Anfragen (nur HTTP 200)';
+        if (data.firstDateIso) {
+          heading.textContent += ' – Datum: ' + data.firstDateIso;
+        }
+        resultDiv.appendChild(heading);
+
+        if (Array.isArray(data.entries) && data.entries.length) {
+          const table = document.createElement('table');
+
+          const thead = document.createElement('thead');
+          const headRow = document.createElement('tr');
+          ['Erster Aufruf (ISO)', 'Letzter Aufruf (ISO)', 'IP-Adresse', 'URL (letzter Aufruf)', 'Browser'].forEach((text) => {
+            const th = document.createElement('th');
+            th.textContent = text;
+            headRow.appendChild(th);
+          });
+          thead.appendChild(headRow);
+          table.appendChild(thead);
+
+          const tbody = document.createElement('tbody');
+          data.entries.forEach((entry) => {
+            const tr = document.createElement('tr');
+
+            const tdFirst = document.createElement('td');
+            const firstTimeStr = entry.firstTime ? entry.firstTime.slice(11, 19) : '';
+            tdFirst.textContent = firstTimeStr;
+
+            const tdLast = document.createElement('td');
+            const lastTimeStr = entry.lastTime ? entry.lastTime.slice(11, 19) : '';
+            tdLast.textContent = lastTimeStr;
+
+            const tdIp = document.createElement('td');
+            tdIp.textContent = entry.ip;
+
+            const tdUrl = document.createElement('td');
+            tdUrl.className = 'urlCell';
+            tdUrl.textContent = entry.lastUrl;
+            tdUrl.title = entry.lastUrl;
+
+            const tdUa = document.createElement('td');
+            tdUa.className = 'uaCell';
+            tdUa.textContent = entry.userAgent;
+
+            // Flag für Randzeiten (vor 07:00 oder nach 21:00) und Bots setzen
+            const timeRef = lastTimeStr || firstTimeStr;
+            let isOffHours = false;
+            if (timeRef && timeRef.length >= 2) {
+              const hh = parseInt(timeRef.slice(0, 2), 10);
+              if (!Number.isNaN(hh) && (hh < 7 || hh >= 21)) {
+                isOffHours = true;
+              }
+            }
+
+            const uaLower = (entry.userAgent || '').toLowerCase();
+            const isBot = /bot|crawl|spider|searchbot|crawler/.test(uaLower);
+
+            if (isOffHours || isBot) {
+              tr.classList.add('lowEmphasis');
+            }
+
+            tr.appendChild(tdFirst);
+            tr.appendChild(tdLast);
+            tr.appendChild(tdIp);
+            tr.appendChild(tdUrl);
+            tr.appendChild(tdUa);
+            tbody.appendChild(tr);
+          });
+
+          table.appendChild(tbody);
+          resultDiv.appendChild(table);
+        } else {
+          const p = document.createElement('p');
+          p.textContent = 'Keine HTTP-200-Zeilen in dieser Datei gefunden.';
+          resultDiv.appendChild(p);
+        }
+
+        if (data.preview) {
+          const previewHeading = document.createElement('h2');
+          previewHeading.textContent = 'Vorschau der Datei';
+          resultDiv.appendChild(previewHeading);
+
+          if (data.previewTruncated) {
+            const info = document.createElement('p');
+            info.textContent = 'Hinweis: Vorschau wurde gekürzt.';
+            resultDiv.appendChild(info);
+          }
+
+          const pre = document.createElement('pre');
+          pre.textContent = data.preview;
+          resultDiv.appendChild(pre);
+        }
+      } catch (err) {
+        resultDiv.textContent = 'Fehler: ' + err.message;
+      }
+    }
+
+    loadAnalysis();
+  </script>
+</body>
+</html>
