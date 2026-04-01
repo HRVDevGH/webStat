@@ -31,6 +31,27 @@ const extractedDirectory = path.join(localDirectory, 'unzipped');
 const downloadMetaFile = path.join(localDirectory, 'download-meta.json');
 // Datei für tägliche Besuchsstatistiken
 const dailyStatsFile = path.join(extractedDirectory, 'daily-stats.json');
+// Konfigurationsdatei
+const configFile = path.join(__dirname, 'config.json');
+
+function loadConfig() {
+  try {
+    if (!fs.existsSync(configFile)) {
+      return { relevantDomains: ['www.hrv.de', 'hrv.de'], sessionThresholdMinutes: 30 };
+    }
+    const raw = fs.readFileSync(configFile, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      relevantDomains: parsed.relevantDomains || ['www.hrv.de', 'hrv.de'],
+      sessionThresholdMinutes: parsed.sessionThresholdMinutes || 30,
+    };
+  } catch (e) {
+    console.error('Konnte Konfigurationsdatei nicht lesen, verwende Defaults:', e);
+    return { relevantDomains: ['www.hrv.de', 'hrv.de'], sessionThresholdMinutes: 30 };
+  }
+}
+
+const config = loadConfig();
 
 function loadDownloadMeta() {
   try {
@@ -468,6 +489,8 @@ async function computeDailyStatsForFile(fileName) {
   const visitors = new Map();
   const MAX_VISITORS = 2000;
   let firstDateIsoFull = null;
+  let errors4xx = 0;
+  let errors429 = 0;
 
   await new Promise((resolve, reject) => {
     rl.on('line', (line) => {
@@ -484,7 +507,21 @@ async function computeDailyStatsForFile(fileName) {
       const host = match[6];
       const userAgent = match[8];
 
-      // Nur 200er berücksichtigen, 404/3xx ignorieren
+      // Nur relevante Domains berücksichtigen
+      if (!config.relevantDomains.includes(host)) return;
+
+      // 4xx-Fehler zählen (400-499)
+      const statusCode = parseInt(status, 10);
+      if (statusCode >= 400 && statusCode < 500) {
+        errors4xx += 1;
+      }
+      
+      // 429-Fehler separat zählen
+      if (statusCode === 429) {
+        errors429 += 1;
+      }
+
+      // Nur 200er für Besucherzählung berücksichtigen, 404/3xx ignorieren
       if (status !== '200') return;
 
       const url = host && host !== '-' ? `https://${host}${pathRequested}` : pathRequested;
@@ -547,7 +584,8 @@ async function computeDailyStatsForFile(fileName) {
     const end = Date.parse(v.lastTime);
     if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 1;
     const diffMinutes = (end - start) / 60000;
-    return diffMinutes > 5 ? 2 : 1;
+    // Session-Grenze aus Konfiguration – längere Spanne wird als zwei Besuche gezählt
+    return diffMinutes > config.sessionThresholdMinutes ? 2 : 1;
   }
 
   for (const v of entries) {
@@ -573,6 +611,8 @@ async function computeDailyStatsForFile(fileName) {
     visitsBots,
     visitsAi,
     visitsHuman,
+    errors4xx,
+    errors429,
   };
 }
 
@@ -816,6 +856,9 @@ app.post('/extract', (req, res) => {
       // Nur 200er berücksichtigen, 404/3xx ignorieren
       if (status !== '200') return;
 
+      // Nur relevante Domains berücksichtigen
+      if (!config.relevantDomains.includes(host)) return;
+
       const url = host && host !== '-' ? `https://${host}${pathRequested}` : pathRequested;
       const timeIso = toIsoFromApacheTime(timeRaw);
 
@@ -875,8 +918,8 @@ app.post('/extract', (req, res) => {
           const end = Date.parse(v.lastTime);
           if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 1;
           const diffMinutes = (end - start) / 60000;
-          // Wenn mehr als 5 Minuten auseinander, als zwei Aufrufe zählen
-          return diffMinutes > 5 ? 2 : 1;
+          // Session-Grenze aus Konfiguration – längere Spanne wird als zwei Besuche gezählt
+          return diffMinutes > config.sessionThresholdMinutes ? 2 : 1;
         }
 
         for (const v of entries) {
@@ -1011,6 +1054,8 @@ app.get('/daily-stats-last30', (req, res) => {
         visitsHuman: s.visitsHuman || 0,
         visitsBots: s.visitsBots || 0,
         visitsAi: s.visitsAi || 0,
+        errors4xx: s.errors4xx || 0,
+        errors429: s.errors429 || 0,
       };
     });
 
@@ -1023,6 +1068,76 @@ app.get('/daily-stats-last30', (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Fehler beim Lesen der letzten 30 Tagesstatistiken',
+      error: error.message,
+    });
+  }
+});
+
+// Liefert die Top-Referrer der letzten 30 Tage
+app.get('/top-referrers', (req, res) => {
+  try {
+    if (!fs.existsSync(extractedDirectory)) {
+      return res.json({ success: true, referrers: [] });
+    }
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+    const logFiles = fs.readdirSync(extractedDirectory)
+      .filter((name) => {
+        const m = /^access-(\d{4}-\d{2}-\d{2})\.log$/.exec(name);
+        return m && m[1] >= cutoffStr;
+      });
+
+    if (!logFiles.length) {
+      return res.json({ success: true, referrers: [] });
+    }
+
+    const logRegex = /^(\S+)\s+\S+\s+\S+\s+\[([^\]]+)\]\s+"(\S+)\s+([^\"]+)\s+\S+"\s+(\d{3})\s+\S+\s+(\S+)\s+"([^\"]*)"\s+"([^\"]*)"/;
+    const referrerCounts = new Map();
+
+    for (const fileName of logFiles) {
+      const sourcePath = path.join(extractedDirectory, fileName);
+      const lines = fs.readFileSync(sourcePath, 'utf8').split('\n');
+
+      for (const line of lines) {
+        const match = logRegex.exec(line);
+        if (!match) continue;
+
+        const status = match[5];
+        const host = match[6];
+        const referrer = match[7];
+
+        // Nur 200er berücksichtigen
+        if (status !== '200') continue;
+
+        // Nur relevante Domains berücksichtigen
+        if (!config.relevantDomains.includes(host)) continue;
+
+        // Leere, "-" oder interne Referrer ignorieren (interne = relevante Domains)
+        if (!referrer || referrer === '-') continue;
+        if (config.relevantDomains.some((d) => referrer.includes(d))) continue;
+
+        const count = referrerCounts.get(referrer) || 0;
+        referrerCounts.set(referrer, count + 1);
+      }
+    }
+
+    const sorted = Array.from(referrerCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([url, count]) => ({ url, count }));
+
+    res.json({
+      success: true,
+      referrers: sorted,
+    });
+  } catch (error) {
+    console.error('Fehler beim Lesen der Top-Referrer:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Fehler beim Lesen der Top-Referrer',
       error: error.message,
     });
   }

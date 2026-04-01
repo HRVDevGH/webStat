@@ -50,6 +50,12 @@
     </p>
     <button id="recomputeDailyStatsBtn">Tagesstatistiken neu berechnen</button>
     <div id="dailyStatsStatus" style="margin-top:0.5rem; white-space:pre-wrap;"></div>
+    
+    <div id="topReferrersSection" style="margin-top:1.5rem;">
+      <h3 style="margin-bottom:0.5rem;">Top-Referrer (letzte 30 Tage)</h3>
+      <div id="topReferrersList" style="font-size:0.9rem; max-height:150px; overflow-y:auto; padding:0.5rem; background:#161616; border:1px solid #333; border-radius:4px;"></div>
+    </div>
+    
     <div style="margin-top:1rem; height:260px;">
       <canvas id="dailyStatsChart"></canvas>
     </div>
@@ -429,8 +435,9 @@
           `Betroffene Tage: ${updated.length ? updated.join(', ') : 'keine'}\n` +
           `Ausgewertete Logdateien: ${data.totalFiles ?? 0}`;
 
-        // Nach erfolgreicher Neuberechnung den Graphen aktualisieren
+        // Nach erfolgreicher Neuberechnung den Graphen und Referrer aktualisieren
         loadDailyStatsChart();
+        loadTopReferrers();
       } catch (err) {
         dailyStatsStatusDiv.textContent = 'Fehler: ' + err.message;
       } finally {
@@ -461,6 +468,8 @@
         const visitsHuman = days.map((d) => d.visitsHuman || 0);
         const visitsBots = days.map((d) => d.visitsBots || 0);
         const visitsAi = days.map((d) => d.visitsAi || 0);
+        const errors4xx = days.map((d) => Math.round((d.errors4xx || 0) / 10));
+        const errors429 = days.map((d) => d.errors429 || 0);
 
         const ctx = dailyStatsChartCanvas.getContext('2d');
 
@@ -493,6 +502,20 @@
               data: visitsAi,
               borderColor: '#c297ff',
               backgroundColor: 'rgba(194, 151, 255, 0.2)',
+              tension: 0.2,
+            },
+            {
+              label: '4xx-Fehler (×10)',
+              data: errors4xx,
+              borderColor: '#ff4444',
+              backgroundColor: 'rgba(255, 68, 68, 0.2)',
+              tension: 0.2,
+            },
+            {
+              label: '429-Fehler (Rate Limit)',
+              data: errors429,
+              borderColor: '#ffd700',
+              backgroundColor: 'rgba(255, 215, 0, 0.2)',
               tension: 0.2,
             },
           ],
@@ -534,12 +557,63 @@
       }
     }
 
+    async function loadTopReferrers() {
+      const topReferrersList = document.getElementById('topReferrersList');
+      if (!topReferrersList) return;
+      
+      try {
+        topReferrersList.textContent = 'Lade Top-Referrer...';
+        const response = await fetch('/top-referrers');
+        const data = await response.json();
+        
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || data.message || 'Fehler beim Laden der Top-Referrer');
+        }
+        
+        const referrers = data.referrers || [];
+        if (!referrers.length) {
+          topReferrersList.textContent = 'Keine externen Referrer gefunden.';
+          return;
+        }
+        
+        topReferrersList.innerHTML = '';
+        const ul = document.createElement('ul');
+        ul.style.margin = '0';
+        ul.style.padding = '0 0 0 1.5rem';
+        ul.style.listStyle = 'disc';
+        
+        referrers.forEach((r) => {
+          const li = document.createElement('li');
+          li.style.marginBottom = '0.3rem';
+          const link = document.createElement('a');
+          link.href = r.url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = r.url.length > 70 ? r.url.slice(0, 67) + '...' : r.url;
+          link.style.color = '#58a6ff';
+          link.style.textDecoration = 'none';
+          const count = document.createElement('span');
+          count.textContent = ` (${r.count})`;
+          count.style.color = '#888';
+          li.appendChild(link);
+          li.appendChild(count);
+          ul.appendChild(li);
+        });
+        
+        topReferrersList.appendChild(ul);
+      } catch (err) {
+        console.error('Fehler beim Laden der Top-Referrer:', err);
+        topReferrersList.textContent = 'Fehler beim Laden: ' + err.message;
+      }
+    }
+
     // Beim Laden der Seite zuerst das Download-Verzeichnis prüfen,
     // dann vorhandene Downloads/entpackte Dateien anzeigen
     checkDownloadDir();
     loadFiles();
     loadUnzippedFiles();
     loadDailyStatsChart();
+    loadTopReferrers();
 
     // KI-Analyse
     const aiAnalyzeBtn = document.getElementById('aiAnalyzeBtn');
